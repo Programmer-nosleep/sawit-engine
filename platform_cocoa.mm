@@ -83,6 +83,9 @@ static void platform_sync_modifier_keys(PlatformApp* app, NSEventModifierFlags m
 static void platform_set_mouse_capture(PlatformApp* app, int enabled);
 static void platform_toggle_fullscreen(PlatformApp* app);
 static void platform_update_dimensions(PlatformApp* app);
+static NSTextView* platform_create_overlay_text_view(NSFont* font, NSColor* text_color, NSColor* background_color);
+static void platform_layout_native_overlays(PlatformApp* app);
+static void platform_update_native_overlays(PlatformApp* app);
 
 static int platform_window_has_focus(const PlatformApp* app)
 {
@@ -202,6 +205,187 @@ static void platform_update_dimensions(PlatformApp* app)
       }
     }
   }
+
+  platform_layout_native_overlays(app);
+}
+
+static NSTextView* platform_create_overlay_text_view(NSFont* font, NSColor* text_color, NSColor* background_color)
+{
+  NSTextView* text_view = [[NSTextView alloc] initWithFrame:NSZeroRect];
+
+  if (text_view == nil)
+  {
+    return nil;
+  }
+
+  [text_view setEditable:NO];
+  [text_view setSelectable:NO];
+  [text_view setRichText:NO];
+  [text_view setImportsGraphics:NO];
+  [text_view setAutomaticQuoteSubstitutionEnabled:NO];
+  [text_view setAutomaticDashSubstitutionEnabled:NO];
+  [text_view setAutomaticDataDetectionEnabled:NO];
+  [text_view setDrawsBackground:YES];
+  [text_view setBackgroundColor:background_color];
+  [text_view setTextColor:text_color];
+  [text_view setFont:font];
+  [text_view setVerticallyResizable:NO];
+  [text_view setHorizontallyResizable:NO];
+  [text_view setTextContainerInset:NSMakeSize(12.0, 10.0)];
+  [[text_view textContainer] setLineFragmentPadding:0.0];
+  [[text_view textContainer] setWidthTracksTextView:YES];
+  [[text_view textContainer] setHeightTracksTextView:YES];
+  if ([text_view respondsToSelector:@selector(setUsesAdaptiveColorMappingForDarkAppearance:)])
+  {
+    [text_view setUsesAdaptiveColorMappingForDarkAppearance:NO];
+  }
+
+  return text_view;
+}
+
+static void platform_layout_native_overlays(PlatformApp* app)
+{
+  NSWindow* window = nil;
+  NSView* content_view = nil;
+  NSTextView* stats_view = nil;
+  NSTextView* debug_view = nil;
+  NSRect bounds = NSZeroRect;
+  const CGFloat margin = 12.0;
+  const CGFloat stats_width = 292.0;
+  const CGFloat stats_height = 208.0;
+  const CGFloat debug_width = 560.0;
+  const CGFloat debug_height = 214.0;
+
+  if (app == NULL)
+  {
+    return;
+  }
+
+  window = (NSWindow*)app->window;
+  content_view = (window != nil) ? [window contentView] : nil;
+  stats_view = (NSTextView*)app->stats_overlay_view;
+  debug_view = (NSTextView*)app->debug_overlay_view;
+  if (content_view == nil)
+  {
+    return;
+  }
+
+  bounds = [content_view bounds];
+  if ((NSView*)app->view != nil)
+  {
+    [(NSView*)app->view setFrame:bounds];
+  }
+
+  if (stats_view != nil)
+  {
+    [stats_view setFrame:NSMakeRect(
+      fmax(margin, bounds.size.width - stats_width - margin),
+      fmax(margin, bounds.size.height - stats_height - margin),
+      fmin(stats_width, fmax(180.0, bounds.size.width - margin * 2.0)),
+      fmin(stats_height, fmax(120.0, bounds.size.height - margin * 2.0))
+    )];
+  }
+
+  if (debug_view != nil)
+  {
+    [debug_view setFrame:NSMakeRect(
+      fmax(margin, bounds.size.width - debug_width - margin),
+      margin,
+      fmin(debug_width, fmax(220.0, bounds.size.width - margin * 2.0)),
+      fmin(debug_height, fmax(120.0, bounds.size.height * 0.34))
+    )];
+  }
+}
+
+static void platform_update_native_overlays(PlatformApp* app)
+{
+  NSTextView* stats_view = nil;
+  NSTextView* debug_view = nil;
+
+  if (app == NULL)
+  {
+    return;
+  }
+
+  stats_view = (NSTextView*)app->stats_overlay_view;
+  debug_view = (NSTextView*)app->debug_overlay_view;
+
+  if (stats_view != nil)
+  {
+    char stats_text[1024] = { 0 };
+    const OverlayMetrics* metrics = &app->overlay.metrics;
+    const GpuPreferenceInfo* gpu_info = &app->overlay.gpu_info;
+    const float fps = (metrics->frames_per_second > 0.0f) ? metrics->frames_per_second : 0.0f;
+    const float frame_ms = (metrics->frame_time_ms > 0.0f) ? metrics->frame_time_ms : 0.0f;
+    const char* renderer_name =
+      (gpu_info->current_renderer[0] != '\0') ? gpu_info->current_renderer : "OpenGL";
+
+    (void)snprintf(
+      stats_text,
+      sizeof(stats_text),
+      "ENGINE\n"
+      "FPS %.0f\n"
+      "Frame %.2f ms\n"
+      "CPU %.0f%%\n"
+      "GPU0 %.0f%%\n"
+      "GPU1 %.0f%%\n"
+      "Pos %.1f %.1f %.1f\n"
+      "Mode %d\n"
+      "Block %d\n"
+      "Placed %d\n"
+      "Target %s\n"
+      "Renderer %s",
+      fps,
+      frame_ms,
+      metrics->cpu_usage_percent,
+      metrics->gpu0_usage_percent,
+      metrics->gpu1_usage_percent,
+      metrics->player_position_x,
+      metrics->player_position_y,
+      metrics->player_position_z,
+      metrics->player_mode,
+      metrics->selected_block_type,
+      metrics->placed_block_count,
+      (metrics->target_active != 0) ? "ON" : "OFF",
+      renderer_name
+    );
+
+    [stats_view setString:[NSString stringWithUTF8String:stats_text]];
+  }
+
+  if (debug_view != nil)
+  {
+    char console_text[8192] = { 0 };
+    size_t offset = 0U;
+    const int recent_count = diagnostics_get_recent_message_count();
+    const int first_index = (recent_count > 10) ? (recent_count - 10) : 0;
+    int message_index = 0;
+
+    for (message_index = first_index; message_index < recent_count; ++message_index)
+    {
+      const char* message = diagnostics_get_recent_message(message_index);
+      const int written = snprintf(
+        console_text + offset,
+        sizeof(console_text) - offset,
+        "%s%s",
+        (offset > 0U) ? "\n" : "",
+        (message != NULL) ? message : ""
+      );
+
+      if (written <= 0 || (size_t)written >= sizeof(console_text) - offset)
+      {
+        break;
+      }
+      offset += (size_t)written;
+    }
+
+    if (offset == 0U)
+    {
+      (void)snprintf(console_text, sizeof(console_text), "DEBUG CONSOLE\nMenunggu log runtime...");
+    }
+
+    [debug_view setString:[NSString stringWithUTF8String:console_text]];
+  }
 }
 
 int platform_create(PlatformApp* app, const char* title, int width, int height)
@@ -210,10 +394,15 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
   {
     NSApplication* application = nil;
     NSWindow* window = nil;
+    NSView* content_view = nil;
     NSOpenGLPixelFormat* pixel_format = nil;
     PlatformOpenGLView* view = nil;
     NSOpenGLContext* context = nil;
     PlatformWindowDelegate* delegate = nil;
+    NSTextView* stats_view = nil;
+    NSTextView* debug_view = nil;
+    NSFont* stats_font = nil;
+    NSFont* debug_font = nil;
     NSString* window_title = nil;
     GLint swap_interval = 0;
     NSRect content_rect = NSMakeRect(0.0, 0.0, width, height);
@@ -298,12 +487,44 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
     delegate = [[PlatformWindowDelegate alloc] init];
     delegate->app = app;
     [window setDelegate:delegate];
-    [window setContentView:view];
+    content_view = [window contentView];
+    [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    [content_view addSubview:view];
     [window makeFirstResponder:view];
     [window setAcceptsMouseMovedEvents:YES];
     [window setTitle:window_title];
     [window center];
     [window makeKeyAndOrderFront:nil];
+
+    stats_font = [NSFont fontWithName:@"Menlo Bold" size:13.0];
+    if (stats_font == nil)
+    {
+      stats_font = [NSFont monospacedSystemFontOfSize:13.0 weight:NSFontWeightSemibold];
+    }
+    debug_font = [NSFont fontWithName:@"Menlo" size:11.0];
+    if (debug_font == nil)
+    {
+      debug_font = [NSFont monospacedSystemFontOfSize:11.0 weight:NSFontWeightRegular];
+    }
+
+    stats_view = platform_create_overlay_text_view(
+      stats_font,
+      [NSColor colorWithCalibratedRed:0.75 green:0.98 blue:0.86 alpha:0.98],
+      [NSColor colorWithCalibratedRed:0.03 green:0.04 blue:0.05 alpha:0.82]
+    );
+    debug_view = platform_create_overlay_text_view(
+      debug_font,
+      [NSColor colorWithCalibratedRed:0.92 green:0.95 blue:0.99 alpha:0.98],
+      [NSColor colorWithCalibratedRed:0.03 green:0.03 blue:0.04 alpha:0.82]
+    );
+    if (stats_view != nil)
+    {
+      [content_view addSubview:stats_view];
+    }
+    if (debug_view != nil)
+    {
+      [content_view addSubview:debug_view];
+    }
 
     context = [view openGLContext];
     if (context == nil)
@@ -334,6 +555,8 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
     app->view = view;
     app->gl_context = context;
     app->window_delegate = delegate;
+    app->stats_overlay_view = stats_view;
+    app->debug_overlay_view = debug_view;
     app->timer_start = CFAbsoluteTimeGetCurrent();
     app->running = 1;
     app->resized = 1;
@@ -352,6 +575,7 @@ int platform_create(PlatformApp* app, const char* title, int width, int height)
 
     platform_update_dimensions(app);
     platform_refresh_gpu_info(app);
+    platform_update_native_overlays(app);
 
     [application finishLaunching];
     [application activateIgnoringOtherApps:YES];
@@ -379,6 +603,20 @@ void platform_destroy(PlatformApp* app)
     diagnostics_log("platform_destroy: cocoa begin");
     app->running = 0;
     platform_set_mouse_capture(app, 0);
+
+    if (app->stats_overlay_view != NULL)
+    {
+      [(NSView*)app->stats_overlay_view removeFromSuperview];
+      [(NSView*)app->stats_overlay_view release];
+      app->stats_overlay_view = NULL;
+    }
+
+    if (app->debug_overlay_view != NULL)
+    {
+      [(NSView*)app->debug_overlay_view removeFromSuperview];
+      [(NSView*)app->debug_overlay_view release];
+      app->debug_overlay_view = NULL;
+    }
 
     if (app->gl_context != NULL)
     {
@@ -783,6 +1021,7 @@ void platform_update_overlay_metrics(PlatformApp* app, const OverlayMetrics* met
   }
 
   app->overlay.metrics = *metrics;
+  platform_update_native_overlays(app);
 }
 
 int platform_consume_gpu_switch_request(PlatformApp* app, GpuPreferenceMode* out_mode)
@@ -813,6 +1052,7 @@ void platform_refresh_gpu_info(PlatformApp* app)
     &app->overlay.gpu_info,
     (const char*)glGetString(GL_RENDERER),
     (const char*)glGetString(GL_VENDOR));
+  platform_update_native_overlays(app);
 }
 
 void platform_show_error_message(const char* title, const char* message)

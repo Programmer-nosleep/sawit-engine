@@ -40,6 +40,8 @@ typedef struct PlatformApp
   void* view;
   void* gl_context;
   void* window_delegate;
+  void* stats_overlay_view;
+  void* debug_overlay_view;
   double timer_start;
   int mouse_dx;
   int mouse_dy;
