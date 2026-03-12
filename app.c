@@ -234,8 +234,7 @@ int app_run(void)
 
       app.stats_display_metrics.sun_distance_mkm = app.scene_settings.sun_distance_mkm;
       app.stats_display_metrics.daylight_duration_seconds = app.scene_settings.cycle_duration_seconds * app.scene_settings.daylight_fraction;
-      app.stats_display_metrics.night_duration_seconds =
-        app.scene_settings.cycle_duration_seconds - app.stats_display_metrics.daylight_duration_seconds;
+      app.stats_display_metrics.night_duration_seconds = app.scene_settings.cycle_duration_seconds - app.stats_display_metrics.daylight_duration_seconds;
       app.stats_display_metrics.player_position_x = app.player.camera.x;
       app.stats_display_metrics.player_position_y = app.player.camera.y;
       app.stats_display_metrics.player_position_z = app.player.camera.z;

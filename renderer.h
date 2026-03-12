@@ -7,6 +7,7 @@
 #include "console_overlay.h"
 #include "grass_render.h"
 #include "gl_headers.h"
+#include "mountain_render.h"
 #include "overlay_ui.h"
 #include "palm_render.h"
 #include "render_quality.h"
@@ -69,6 +70,7 @@ typedef struct Renderer
   GLint shadow_shape_location;
   GLint post_quality_location;
   PalmRenderMesh palm_mesh;
+  MountainRenderMesh mountain_mesh;
   TreeRenderMesh tree_mesh;
   GrassRenderMesh grass_mesh;
   ConsoleOverlay console_overlay;

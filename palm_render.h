@@ -10,14 +10,15 @@
 
 enum
 {
-  PALM_RENDER_MAX_VARIANTS = 4
+  PALM_RENDER_MAX_VARIANTS = 5
 };
 
 typedef enum PalmRenderCategory
 {
   PALM_RENDER_CATEGORY_PALM = 0,
   PALM_RENDER_CATEGORY_TREE = 1,
-  PALM_RENDER_CATEGORY_GRASS = 2
+  PALM_RENDER_CATEGORY_GRASS = 2,
+  PALM_RENDER_CATEGORY_MOUNTAIN = 3
 } PalmRenderCategory;
 
 typedef struct PalmRenderVariant
@@ -31,6 +32,7 @@ typedef struct PalmRenderVariant
   void* cpu_instances;
   size_t cpu_instance_capacity;
   float model_height;
+  float model_radius;
   int category;
   float desired_height_min;
   float desired_height_max;

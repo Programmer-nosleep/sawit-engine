@@ -159,6 +159,7 @@ else()
     gpu_preferences.c
     math3d.c
     main.c
+    mountain_render.c
     palm_render.c
     platform_support.c
     player_controller.c

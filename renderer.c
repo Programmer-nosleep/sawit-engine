@@ -4,6 +4,7 @@
 #include "diagnostics.h"
 #include "grass_render.h"
 #include "math3d.h"
+#include "mountain_render.h"
 #include "palm_render.h"
 #include "platform_support.h"
 #include "terrain.h"
@@ -204,6 +205,7 @@ int renderer_create(Renderer* renderer, int width, int height)
   }
 
   if (!palm_render_create(&renderer->palm_mesh) ||
+    !mountain_render_create(&renderer->mountain_mesh) ||
     !tree_render_create(&renderer->tree_mesh) ||
     !grass_render_create(&renderer->grass_mesh))
   {
@@ -244,6 +246,7 @@ void renderer_destroy(Renderer* renderer)
   renderer_destroy_shadow_map(renderer);
   renderer_destroy_terrain(renderer);
   palm_render_destroy(&renderer->palm_mesh);
+  mountain_render_destroy(&renderer->mountain_mesh);
   tree_render_destroy(&renderer->tree_mesh);
   grass_render_destroy(&renderer->grass_mesh);
   stats_overlay_destroy(&renderer->stats_overlay);
@@ -383,6 +386,7 @@ void renderer_render(
   const Matrix light_view_projection = renderer_get_light_view_projection_matrix(renderer, camera, atmosphere, active_settings);
 
   (void)palm_render_update(&renderer->palm_mesh, camera, active_settings, &renderer->quality);
+  (void)mountain_render_update(&renderer->mountain_mesh, camera, active_settings, &renderer->quality);
   (void)tree_render_update(&renderer->tree_mesh, camera, active_settings, &renderer->quality);
   (void)grass_render_update(&renderer->grass_mesh, camera, active_settings, &renderer->quality);
   renderer_get_terrain_origin(renderer, camera, &terrain_origin_x, &terrain_origin_z);
@@ -420,9 +424,9 @@ void renderer_render(
   {
     glUniformMatrix4fv(renderer->palm_shadow_light_view_projection_location, 1, GL_FALSE, light_view_projection.m);
   }
+  glDisable(GL_CULL_FACE);
   palm_render_draw(&renderer->palm_mesh);
   tree_render_draw(&renderer->tree_mesh);
-  glDisable(GL_CULL_FACE);
   grass_render_draw(&renderer->grass_mesh);
   glEnable(GL_CULL_FACE);
 
@@ -563,9 +567,10 @@ void renderer_render(
   {
     glUniform4fv(renderer->palm_environment_location, 1, environment_settings);
   }
+  glDisable(GL_CULL_FACE);
+  mountain_render_draw(&renderer->mountain_mesh);
   palm_render_draw(&renderer->palm_mesh);
   tree_render_draw(&renderer->tree_mesh);
-  glDisable(GL_CULL_FACE);
   grass_render_draw(&renderer->grass_mesh);
   glEnable(GL_CULL_FACE);
   block_render_draw_world(renderer->framebuffer_width, renderer->framebuffer_height, camera, atmosphere, active_settings, block_world);

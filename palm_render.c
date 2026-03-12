@@ -118,11 +118,13 @@ enum
 };
 
 static const float k_palm_render_pi = 3.14159265f;
+static const float k_palm_render_terrain_half_extent = 3200.0f;
 static const PalmRenderAssetSpec k_palm_render_asset_specs[PALM_RENDER_MAX_VARIANTS] = {
   { "res/obj/kelapasawit.obj", PALM_RENDER_CATEGORY_PALM, 8.2f, 12.4f, 0.82f, 1.22f, 0.22f, 0.58f, 1.45f },
   { "res/obj/Date Palm.obj", PALM_RENDER_CATEGORY_PALM, 8.6f, 12.8f, 0.82f, 1.18f, 0.20f, 0.54f, 1.40f },
   { "res/obj/Tree.obj", PALM_RENDER_CATEGORY_TREE, 9.2f, 14.6f, 0.80f, 1.16f, 0.24f, 0.60f, 1.32f },
-  { "res/obj/Trava Kolosok.obj", PALM_RENDER_CATEGORY_GRASS, 0.62f, 1.28f, 0.82f, 1.24f, 0.02f, 0.08f, 1.08f }
+  { "res/obj/Trava Kolosok.obj", PALM_RENDER_CATEGORY_GRASS, 0.62f, 1.28f, 0.82f, 1.24f, 0.02f, 0.08f, 1.08f },
+  { "res/obj/mountain.obj", PALM_RENDER_CATEGORY_MOUNTAIN, 980.0f, 1720.0f, 0.90f, 1.20f, 140.0f, 380.0f, 12.0f }
 };
 
 static void palm_render_show_error(const char* title, const char* message);
@@ -163,6 +165,7 @@ static int palm_render_load_model_vertices(
   PalmVertex** out_vertices,
   GLsizei* out_vertex_count,
   float* out_model_height,
+  float* out_model_radius,
   char* out_diffuse_texture_path,
   size_t out_diffuse_texture_path_size);
 static int palm_render_create_variant(PalmRenderVariant* variant, const PalmRenderAssetSpec* asset_spec);
@@ -170,6 +173,12 @@ static void palm_render_destroy_variant(PalmRenderVariant* variant);
 static int palm_render_reserve_instances(PalmRenderVariant* variant, size_t required_instance_capacity);
 static float palm_render_clamp(float value, float min_value, float max_value);
 static float palm_render_mix(float a, float b, float t);
+static float palm_render_get_terrain_step_for_quality(const RendererQualityProfile* quality);
+static void palm_render_get_terrain_origin_from_camera(
+  const CameraState* camera,
+  const RendererQualityProfile* quality,
+  float* out_x,
+  float* out_z);
 static float palm_render_hash_unit(int x, int z, unsigned int seed);
 static float palm_render_estimate_slope(float x, float z, const SceneSettings* settings);
 static int palm_render_has_category(const PalmRenderMesh* mesh, int category);
@@ -202,6 +211,12 @@ static int palm_render_populate_grass_instances(
   const CameraState* camera,
   const SceneSettings* settings,
   const RendererQualityProfile* quality);
+static int palm_render_populate_mountain_instances(
+  PalmRenderMesh* mesh,
+  const CameraState* camera,
+  const SceneSettings* settings,
+  const RendererQualityProfile* quality);
+static float palm_render_sample_lowest_terrain_ring(float x, float z, float radius, const SceneSettings* settings);
 static void palm_render_build_instance_transform(PalmInstanceData* instance, float x, float y, float z, float scale, float yaw_radians, PalmColor tint);
 
 int palm_render_create(PalmRenderMesh* mesh)
@@ -244,6 +259,9 @@ int palm_render_create_category(PalmRenderMesh* mesh, PalmRenderCategory categor
     case PALM_RENDER_CATEGORY_GRASS:
       category_name = "grass";
       break;
+    case PALM_RENDER_CATEGORY_MOUNTAIN:
+      category_name = "mountain";
+      break;
     default:
       break;
   }
@@ -264,6 +282,7 @@ static int palm_render_create_variant(PalmRenderVariant* variant, const PalmRend
   PalmVertex* vertices = NULL;
   GLsizei vertex_count = 0;
   float model_height = 1.0f;
+  float model_radius = 1.0f;
   char diffuse_texture_path[PLATFORM_PATH_MAX] = { 0 };
   int column = 0;
 
@@ -278,6 +297,7 @@ static int palm_render_create_variant(PalmRenderVariant* variant, const PalmRend
     &vertices,
     &vertex_count,
     &model_height,
+    &model_radius,
     diffuse_texture_path,
     sizeof(diffuse_texture_path)))
   {
@@ -297,6 +317,7 @@ static int palm_render_create_variant(PalmRenderVariant* variant, const PalmRend
 
   variant->vertex_count = vertex_count;
   variant->model_height = model_height;
+  variant->model_radius = model_radius;
   variant->category = asset_spec->category;
   variant->desired_height_min = asset_spec->desired_height_min;
   variant->desired_height_max = asset_spec->desired_height_max;
@@ -401,6 +422,7 @@ static void palm_render_destroy_variant(PalmRenderVariant* variant)
   variant->vertex_count = 0;
   variant->instance_count = 0;
   variant->model_height = 0.0f;
+  variant->model_radius = 0.0f;
   variant->category = PALM_RENDER_CATEGORY_PALM;
   variant->desired_height_min = 0.0f;
   variant->desired_height_max = 0.0f;
@@ -446,7 +468,10 @@ int palm_render_update_category(
     return 0;
   }
 
-  if (camera == NULL || mesh->variant_count <= 0 || active_settings->palm_size <= 0.01f || !palm_render_has_category(mesh, category))
+  if (camera == NULL ||
+    mesh->variant_count <= 0 ||
+    !palm_render_has_category(mesh, category) ||
+    (category != PALM_RENDER_CATEGORY_MOUNTAIN && active_settings->palm_size <= 0.01f))
   {
     for (variant_index = 0; variant_index < mesh->variant_count; ++variant_index)
     {
@@ -470,6 +495,9 @@ int palm_render_update_category(
       break;
     case PALM_RENDER_CATEGORY_GRASS:
       populate_result = palm_render_populate_grass_instances(mesh, camera, active_settings, quality);
+      break;
+    case PALM_RENDER_CATEGORY_MOUNTAIN:
+      populate_result = palm_render_populate_mountain_instances(mesh, camera, active_settings, quality);
       break;
     default:
       return 0;
@@ -1409,6 +1437,7 @@ static int palm_render_load_model_vertices(
   PalmVertex** out_vertices,
   GLsizei* out_vertex_count,
   float* out_model_height,
+  float* out_model_radius,
   char* out_diffuse_texture_path,
   size_t out_diffuse_texture_path_size)
 {
@@ -1430,13 +1459,14 @@ static int palm_render_load_model_vertices(
   size_t base_count = 0U;
   size_t i = 0U;
 
-  if (relative_obj_path == NULL || out_vertices == NULL || out_vertex_count == NULL || out_model_height == NULL)
+  if (relative_obj_path == NULL || out_vertices == NULL || out_vertex_count == NULL || out_model_height == NULL || out_model_radius == NULL)
   {
     return 0;
   }
   *out_vertices = NULL;
   *out_vertex_count = 0;
   *out_model_height = 1.0f;
+  *out_model_radius = 1.0f;
   if (out_diffuse_texture_path != NULL && out_diffuse_texture_path_size > 0U)
   {
     out_diffuse_texture_path[0] = '\0';
@@ -1782,6 +1812,12 @@ static int palm_render_load_model_vertices(
   *out_vertices = vertices.data;
   *out_vertex_count = (GLsizei)vertices.count;
   *out_model_height = palm_render_clamp(bounds_max.y - bounds_min.y, 1.0f, 10000.0f);
+  {
+    const float model_width = bounds_max.x - bounds_min.x;
+    const float model_depth = bounds_max.z - bounds_min.z;
+    const float model_span = (model_width > model_depth) ? model_width : model_depth;
+    *out_model_radius = palm_render_clamp(model_span * 0.5f, 1.0f, 10000.0f);
+  }
   if (out_diffuse_texture_path != NULL &&
     out_diffuse_texture_path_size > 0U &&
     texture_selection_valid &&
@@ -2162,15 +2198,15 @@ static int palm_render_populate_tree_instances(
   lod_config.radius_scale_high = 1.22f;
   lod_config.effective_radius_min = 94.0f;
   lod_config.effective_radius_max = 1120.0f;
-  lod_config.requested_instance_count = settings->palm_count * 0.30f;
+  lod_config.requested_instance_count = settings->palm_count * 0.22f;
   lod_config.requested_instance_count_min = 0.0f;
-  lod_config.requested_instance_count_max = 2200.0f;
+  lod_config.requested_instance_count_max = 1500.0f;
   lod_config.instance_budget_min = 12;
-  lod_config.instance_budget_max = 42;
+  lod_config.instance_budget_max = 26;
   lod_config.source_vertex_count = (float)max_vertex_count;
   lod_config.fallback_vertex_count = 92502.0f;
-  lod_config.vertex_budget_low = 1800000.0f;
-  lod_config.vertex_budget_high = 3600000.0f;
+  lod_config.vertex_budget_low = 1100000.0f;
+  lod_config.vertex_budget_high = 2400000.0f;
   lod_config.cell_size_min = 24.0f;
   lod_config.cell_size_max = 160.0f;
 
@@ -2314,17 +2350,17 @@ static int palm_render_populate_grass_instances(
   lod_config.radius_scale_high = 1.08f;
   lod_config.effective_radius_min = 72.0f;
   lod_config.effective_radius_max = 760.0f;
-  lod_config.requested_instance_count = settings->palm_count * 20.0f;
+  lod_config.requested_instance_count = settings->palm_count * 12.0f;
   lod_config.requested_instance_count_min = 0.0f;
-  lod_config.requested_instance_count_max = 18000.0f;
-  lod_config.instance_budget_min = 72;
-  lod_config.instance_budget_max = 900;
+  lod_config.requested_instance_count_max = 12000.0f;
+  lod_config.instance_budget_min = 48;
+  lod_config.instance_budget_max = 520;
   lod_config.source_vertex_count = (float)max_vertex_count;
   lod_config.fallback_vertex_count = 900.0f;
-  lod_config.vertex_budget_low = 1200000.0f;
-  lod_config.vertex_budget_high = 3200000.0f;
+  lod_config.vertex_budget_low = 650000.0f;
+  lod_config.vertex_budget_high = 1800000.0f;
   lod_config.cell_size_min = 6.0f;
-  lod_config.cell_size_max = 24.0f;
+  lod_config.cell_size_max = 28.0f;
 
   lod_state = procedural_lod_resolve(quality, &lod_config);
   radius = lod_state.effective_radius;
@@ -2445,6 +2481,125 @@ static int palm_render_populate_grass_instances(
   return 1;
 }
 
+static int palm_render_populate_mountain_instances(
+  PalmRenderMesh* mesh,
+  const CameraState* camera,
+  const SceneSettings* settings,
+  const RendererQualityProfile* quality)
+{
+  const GLsizei max_vertex_count = palm_render_get_max_vertex_count_for_category(mesh, PALM_RENDER_CATEGORY_MOUNTAIN);
+  const int mountain_count = 14;
+  const float terrain_step = palm_render_get_terrain_step_for_quality(quality);
+  const float ring_radius = k_palm_render_terrain_half_extent + 420.0f;
+  float center_x = 0.0f;
+  float center_z = 0.0f;
+  int center_grid_x = 0;
+  int center_grid_z = 0;
+  int variant_index = 0;
+  int mountain_index = 0;
+
+  if (mesh == NULL || camera == NULL || settings == NULL || !palm_render_has_category(mesh, PALM_RENDER_CATEGORY_MOUNTAIN) || max_vertex_count <= 0)
+  {
+    return 1;
+  }
+
+  palm_render_get_terrain_origin_from_camera(camera, quality, &center_x, &center_z);
+  center_grid_x = (int)floorf(center_x / terrain_step);
+  center_grid_z = (int)floorf(center_z / terrain_step);
+
+  if (palm_render_cache_matches(mesh, center_grid_x, center_grid_x, center_grid_z, center_grid_z, ring_radius, terrain_step, settings))
+  {
+    return 2;
+  }
+
+  palm_render_reset_instances(mesh);
+  mesh->cache_valid = 0;
+
+  for (variant_index = 0; variant_index < mesh->variant_count; ++variant_index)
+  {
+    PalmRenderVariant* variant = &mesh->variants[variant_index];
+    if (variant->category == PALM_RENDER_CATEGORY_MOUNTAIN && !palm_render_reserve_instances(variant, (size_t)mountain_count))
+    {
+      return 0;
+    }
+  }
+
+  for (mountain_index = 0; mountain_index < mountain_count; ++mountain_index)
+  {
+    const float variation = palm_render_hash_unit(mountain_index, 0, 60U);
+    const float scale_jitter = palm_render_hash_unit(mountain_index, 0, 61U);
+    const float angle_jitter = palm_render_mix(-0.18f, 0.18f, palm_render_hash_unit(mountain_index, 0, 62U));
+    const float radius_jitter = palm_render_mix(-280.0f, 240.0f, palm_render_hash_unit(mountain_index, 0, 63U));
+    const float angle = (((float)mountain_index + 0.5f) / (float)mountain_count) * (k_palm_render_pi * 2.0f) + angle_jitter;
+    const float x = center_x + cosf(angle) * (ring_radius + radius_jitter);
+    const float z = center_z + sinf(angle) * (ring_radius + radius_jitter);
+    const float ground_y = terrain_get_height(x, z, settings);
+    const float yaw = angle + palm_render_mix(-0.40f, 0.40f, palm_render_hash_unit(mountain_index, 0, 64U));
+    PalmRenderVariant* variant = palm_render_pick_variant(mesh, PALM_RENDER_CATEGORY_MOUNTAIN, mountain_index, center_grid_x + center_grid_z, 65U);
+    PalmColor tint = {
+      palm_render_mix(0.92f, 1.04f, variation),
+      palm_render_mix(0.88f, 1.00f, scale_jitter),
+      palm_render_mix(0.82f, 0.94f, variation)
+    };
+    float desired_height = 0.0f;
+    float scale = 1.0f;
+    float footprint_radius = 1.0f;
+    float lowest_ground_y = ground_y;
+    float terrain_drop = 0.0f;
+    float embed_depth = 0.0f;
+
+    if (variant == NULL || variant->model_height <= 0.0001f || variant->model_radius <= 0.0001f)
+    {
+      continue;
+    }
+    if ((size_t)variant->instance_count >= variant->cpu_instance_capacity)
+    {
+      continue;
+    }
+
+    desired_height = palm_render_mix(variant->desired_height_min, variant->desired_height_max, variation) *
+      palm_render_mix(variant->scale_jitter_min, variant->scale_jitter_max, scale_jitter);
+    scale = desired_height / variant->model_height;
+    footprint_radius = variant->model_radius * scale * 0.72f;
+    lowest_ground_y = palm_render_sample_lowest_terrain_ring(x, z, footprint_radius, settings);
+    terrain_drop = ground_y - lowest_ground_y;
+    if (terrain_drop < 0.0f)
+    {
+      terrain_drop = 0.0f;
+    }
+    embed_depth = palm_render_mix(variant->embed_depth_min, variant->embed_depth_max, variation) +
+      desired_height * 0.24f +
+      terrain_drop;
+
+    palm_render_build_instance_transform(
+      &((PalmInstanceData*)variant->cpu_instances)[variant->instance_count],
+      x,
+      ground_y - embed_depth,
+      z,
+      scale,
+      yaw,
+      tint);
+    variant->instance_count += 1;
+  }
+
+  mesh->cache_valid = 1;
+  mesh->cache_grid_min_x = center_grid_x;
+  mesh->cache_grid_max_x = center_grid_x;
+  mesh->cache_grid_min_z = center_grid_z;
+  mesh->cache_grid_max_z = center_grid_z;
+  mesh->cache_radius = ring_radius;
+  mesh->cache_cell_size = terrain_step;
+  mesh->cache_palm_size = settings->palm_size;
+  mesh->cache_palm_count = settings->palm_count;
+  mesh->cache_palm_fruit_density = settings->palm_fruit_density;
+  mesh->cache_palm_render_radius = settings->palm_render_radius;
+  mesh->cache_terrain_base_height = settings->terrain_base_height;
+  mesh->cache_terrain_height_scale = settings->terrain_height_scale;
+  mesh->cache_terrain_roughness = settings->terrain_roughness;
+  mesh->cache_terrain_ridge_strength = settings->terrain_ridge_strength;
+  return 1;
+}
+
 static float palm_render_clamp(float value, float min_value, float max_value)
 {
   if (value < min_value)
@@ -2461,6 +2616,76 @@ static float palm_render_clamp(float value, float min_value, float max_value)
 static float palm_render_mix(float a, float b, float t)
 {
   return a + (b - a) * t;
+}
+
+static float palm_render_get_terrain_step_for_quality(const RendererQualityProfile* quality)
+{
+  int terrain_resolution = 257;
+  int shadow_terrain_resolution = 0;
+  int active_resolution = 257;
+
+  if (quality != NULL)
+  {
+    if (quality->terrain_resolution > 2)
+    {
+      terrain_resolution = quality->terrain_resolution;
+    }
+    if (quality->shadow_terrain_resolution > 2)
+    {
+      shadow_terrain_resolution = quality->shadow_terrain_resolution;
+    }
+  }
+
+  active_resolution = (shadow_terrain_resolution > terrain_resolution) ? shadow_terrain_resolution : terrain_resolution;
+  if (active_resolution < 3)
+  {
+    active_resolution = 257;
+  }
+
+  return (k_palm_render_terrain_half_extent * 2.0f) / (float)(active_resolution - 1);
+}
+
+static void palm_render_get_terrain_origin_from_camera(
+  const CameraState* camera,
+  const RendererQualityProfile* quality,
+  float* out_x,
+  float* out_z)
+{
+  const float terrain_step = palm_render_get_terrain_step_for_quality(quality);
+
+  if (out_x != NULL)
+  {
+    *out_x = (camera != NULL) ? floorf(camera->x / terrain_step) * terrain_step : 0.0f;
+  }
+  if (out_z != NULL)
+  {
+    *out_z = (camera != NULL) ? floorf(camera->z / terrain_step) * terrain_step : 0.0f;
+  }
+}
+
+static float palm_render_sample_lowest_terrain_ring(float x, float z, float radius, const SceneSettings* settings)
+{
+  float lowest_height = terrain_get_height(x, z, settings);
+  int sample_index = 0;
+
+  if (settings == NULL || radius <= 0.01f)
+  {
+    return lowest_height;
+  }
+
+  for (sample_index = 0; sample_index < 8; ++sample_index)
+  {
+    const float angle = ((float)sample_index / 8.0f) * (k_palm_render_pi * 2.0f);
+    const float sample_x = x + cosf(angle) * radius;
+    const float sample_z = z + sinf(angle) * radius;
+    const float sample_height = terrain_get_height(sample_x, sample_z, settings);
+    if (sample_height < lowest_height)
+    {
+      lowest_height = sample_height;
+    }
+  }
+
+  return lowest_height;
 }
 
 static float palm_render_hash_unit(int x, int z, unsigned int seed)
