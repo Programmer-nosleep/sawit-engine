@@ -46,12 +46,7 @@ static float app_wrap_degrees(float value);
 static BlockType app_get_block_type_for_slot(int slot);
 static void app_apply_world_actions(AppState* app, const PlatformInput* input);
 static void app_update_day_cycle(DayCycleState* cycle, const PlatformInput* input, float delta_seconds, int freeze_time_enabled);
-static void app_update_atmosphere(
-  const DayCycleState* cycle,
-  const SceneSettings* settings,
-  AtmosphereState* atmosphere,
-  float cloud_time_seconds
-);
+static void app_update_atmosphere(const DayCycleState* cycle, const SceneSettings* settings, AtmosphereState* atmosphere, float cloud_time_seconds);
 static void app_update_window_title(const AppState* app);
 
 static const float k_app_default_time_of_day = 0.23f;
